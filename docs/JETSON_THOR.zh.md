@@ -1,3 +1,4 @@
+<!-- translate: skip -->
 # 在 NVIDIA Jetson AGX Thor 上部署 LightNav-0 推理服务
 
 [English](JETSON_THOR.md)
