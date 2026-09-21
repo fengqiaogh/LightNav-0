@@ -51,34 +51,26 @@ jobs:
         id: select
         run: |
           set -euo pipefail
-          BEFORE="${{ github.event.before || '' }}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.translate_all }}" = "true" ]; then
             echo "mode=all" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            echo "mode=all" >> "$GITHUB_OUTPUT"
-            exit 0
+          echo "mode=changed" >> "$GITHUB_OUTPUT"
+          BEFORE="${{ github.event.before || '' }}"
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            mapfile -t files < <(git diff --name-only "$BEFORE" "${{ github.sha }}" -- \
+              '*.md' ':!**/*.zh.md' ':!*.zh.md' || true)
+            for f in "${files[@]+"${files[@]}"}"; do
+              case "$f" in
+                AGENTS.md|THIRD_PARTY_NOTICES.md) continue ;;
+                *.zh.md) continue ;;
+                *.md) printf '%s\n' "$f" >> /tmp/md-files.txt ;;
+              esac
+            done
           fi
-          mapfile -t files < <(git diff --name-only "$BEFORE" "${{ github.sha }}" -- \
-            '*.md' ':!**/*.zh.md' ':!*.zh.md' || true)
-          kept=()
-          for f in "${files[@]}"; do
-            case "$f" in
-              AGENTS.md|THIRD_PARTY_NOTICES.md) continue ;;
-              *.zh.md) continue ;;
-              *.md) kept+=("$f") ;;
-            esac
-          done
-          if [ ${#kept[@]} -eq 0 ]; then
-            echo "mode=none" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=files" >> "$GITHUB_OUTPUT"
-            printf '%s\n' "${kept[@]}" > /tmp/md-files.txt
-          fi
+          touch /tmp/md-files.txt
 
       - name: Translate
-        if: steps.select.outputs.mode != 'none'
         env:
           TRANSLATE_API_KEY: ${{ secrets.TRANSLATE_API_KEY }}
           TRANSLATE_BASE_URL: ${{ secrets.TRANSLATE_BASE_URL }}
@@ -86,17 +78,17 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${TRANSLATE_API_KEY:-}" ]; then
-            echo "Set repository secret TRANSLATE_API_KEY (and optionally TRANSLATE_BASE_URL / TRANSLATE_MODEL)."
+            echo "Set repository secret TRANSLATE_API_KEY."
             exit 1
           fi
           if [ "${{ steps.select.outputs.mode }}" = "all" ]; then
             python scripts/translate_md.py --all
           else
-            python scripts/translate_md.py $(cat /tmp/md-files.txt)
+            mapfile -t files < /tmp/md-files.txt
+            python scripts/translate_md.py --missing ${files[@]+"${files[@]}"}
           fi
 
       - name: Commit Chinese Markdown
-        if: steps.select.outputs.mode != 'none'
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
