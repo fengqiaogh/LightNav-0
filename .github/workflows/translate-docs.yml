@@ -1,0 +1,110 @@
+# Translate English Markdown into sibling *.zh.md files when the English
+# source changes. Requires repository secrets (Settings → Secrets → Actions):
+#
+#   TRANSLATE_API_KEY     DeepSeek API key (required), e.g. sk-...
+#   TRANSLATE_BASE_URL    optional, default https://api.deepseek.com/v1
+#   TRANSLATE_MODEL       optional, default deepseek-chat
+#
+# Manual freeze: put `<!-- translate: skip -->` in a *.zh.md (or its English
+# source) and the workflow will leave that pair alone.
+#
+# First run: Actions → Translate docs to Chinese → Run workflow → translate all.
+
+name: Translate docs to Chinese
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - "!**/*.zh.md"
+      - ".github/workflows/translate-docs.yml"
+      - "scripts/translate_md.py"
+  workflow_dispatch:
+    inputs:
+      translate_all:
+        description: Translate every English Markdown file
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: translate-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  translate:
+    if: github.repository_owner != 'lightorigins'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Select files
+        id: select
+        run: |
+          set -euo pipefail
+          BEFORE="${{ github.event.before || '' }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.translate_all }}" = "true" ]; then
+            echo "mode=all" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "mode=all" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mapfile -t files < <(git diff --name-only "$BEFORE" "${{ github.sha }}" -- \
+            '*.md' ':!**/*.zh.md' ':!*.zh.md' || true)
+          kept=()
+          for f in "${files[@]}"; do
+            case "$f" in
+              AGENTS.md|THIRD_PARTY_NOTICES.md) continue ;;
+              *.zh.md) continue ;;
+              *.md) kept+=("$f") ;;
+            esac
+          done
+          if [ ${#kept[@]} -eq 0 ]; then
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=files" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "${kept[@]}" > /tmp/md-files.txt
+          fi
+
+      - name: Translate
+        if: steps.select.outputs.mode != 'none'
+        env:
+          TRANSLATE_API_KEY: ${{ secrets.TRANSLATE_API_KEY }}
+          TRANSLATE_BASE_URL: ${{ secrets.TRANSLATE_BASE_URL }}
+          TRANSLATE_MODEL: ${{ secrets.TRANSLATE_MODEL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TRANSLATE_API_KEY:-}" ]; then
+            echo "Set repository secret TRANSLATE_API_KEY (and optionally TRANSLATE_BASE_URL / TRANSLATE_MODEL)."
+            exit 1
+          fi
+          if [ "${{ steps.select.outputs.mode }}" = "all" ]; then
+            python scripts/translate_md.py --all
+          else
+            python scripts/translate_md.py $(cat /tmp/md-files.txt)
+          fi
+
+      - name: Commit Chinese Markdown
+        if: steps.select.outputs.mode != 'none'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          find . -name '*.zh.md' -not -path './.git/*' -print0 | xargs -0 -r git add --
+          if git diff --cached --quiet; then
+            echo "No translation changes."
+            exit 0
+          fi
+          git commit -m "docs: update Chinese translations"
+          git push
