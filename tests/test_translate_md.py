@@ -38,3 +38,19 @@ def test_wrap_zh_injects_english_link() -> None:
     assert out.startswith("<!--")
     assert "[English](FOO.md)" in out
     assert out.count("[English](FOO.md)") == 1
+
+
+def test_missing_english_markdown_skips_existing_and_frozen(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "NEW.md").write_text("# New\n", encoding="utf-8")
+    (tmp_path / "docs" / "OLD.md").write_text("# Old\n", encoding="utf-8")
+    (tmp_path / "docs" / "OLD.zh.md").write_text("# 旧\n", encoding="utf-8")
+    (tmp_path / "docs" / "HAND.md").write_text("# Hand\n", encoding="utf-8")
+    (tmp_path / "docs" / "HAND.zh.md").write_text(
+        "<!-- translate: skip -->\n# 手翻\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(translate_md, "repo_root", lambda: tmp_path)
+    missing = {p.as_posix() for p in translate_md.missing_english_markdown(tmp_path)}
+    assert "docs/NEW.md" in missing
+    assert "docs/OLD.md" not in missing
+    assert "docs/HAND.md" not in missing

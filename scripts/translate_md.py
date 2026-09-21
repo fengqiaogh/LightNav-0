@@ -186,15 +186,32 @@ def wrap_zh(english: Path, body: str) -> str:
 
 
 def iter_english_markdown(root: Path) -> list[Path]:
-    found = [
-        p
-        for p in root.rglob("*.md")
-        if ".git" not in p.parts and is_english_md(p)
-    ]
+    found = []
+    for p in root.rglob("*.md"):
+        if any(part.startswith(".") for part in p.parts):
+            continue
+        if is_english_md(p):
+            found.append(p.resolve().relative_to(root.resolve()))
     return sorted(found)
 
 
+def missing_english_markdown(root: Path) -> list[Path]:
+    root = root.resolve()
+    missing: list[Path] = []
+    for english in iter_english_markdown(root):
+        english_abs = root / english
+        chinese = zh_path_for(english_abs)
+        if should_skip(english_abs, chinese):
+            continue
+        if not chinese.is_file():
+            missing.append(english)
+    return missing
+
+
 def translate_file(english: Path, *, dry_run: bool = False) -> Path | None:
+    root = repo_root()
+    if english.is_absolute():
+        english = english.resolve().relative_to(root)
     chinese = zh_path_for(english)
     if should_skip(english, chinese):
         print(f"skip  {english}")
@@ -221,6 +238,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Translate every English Markdown file in the repo",
     )
+    parser.add_argument(
+        "--missing",
+        action="store_true",
+        help="Also translate English files that have no sibling *.zh.md yet",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -239,6 +261,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"missing  {raw}", file=sys.stderr)
                 continue
             targets.append(path.resolve().relative_to(root))
+        if args.missing:
+            seen = {p.as_posix() for p in targets}
+            for path in missing_english_markdown(root):
+                if path.as_posix() not in seen:
+                    targets.append(path)
     if not targets:
         print("no markdown files to translate")
         return 0
